@@ -242,23 +242,6 @@ agentForge:
   baseUrl: http://127.0.0.1:8000
 ```
 
----
-
-## 🔎 Debugging Tips
-
-### View Logs
-Open GitHub Actions → Workflow run → **Logs**.
-
-### Check OpenShift Pod
-```bash
-oc -n poteatc-dev get pods
-oc -n poteatc-dev logs <pod-name>
-```
-
-### Inspect ConfigMap
-```bash
-oc -n poteatc-dev get cm redhat-developer-hub-dynamic-plugins -o yaml
-```
 
 ---
 
@@ -277,7 +260,7 @@ oc -n poteatc-dev get cm redhat-developer-hub-dynamic-plugins -o yaml
 
 - **Backup ConfigMap before patching:**
   ```bash
-  oc -n poteatc-dev get cm redhat-developer-hub-dynamic-plugins -o yaml > backup.yaml
+  oc -n <project> get cm redhat-developer-hub-dynamic-plugins -o yaml > backup.yaml
   ```
 
 ---
