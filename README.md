@@ -26,7 +26,7 @@ yarn start
 
 The app will start and be accessible at:
 ```
-http://localhost:7007
+http://localhost:3000
 ```
 
 The backend API runs on port `7007` by default.
