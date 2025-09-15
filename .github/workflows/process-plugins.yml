@@ -1,0 +1,210 @@
+name: RHDH Plugin Pipeline
+
+permissions:
+  contents: write # Required to push updated yarn.lock back to main branch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'plugins/**'
+      - 'packages/**'
+      - '.yarn/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'yarn.lock'
+      - '.yarnrc.yml'
+      - '.github/workflows/**'
+      - '**/tsconfig.json'
+      - '**/tsconfigs/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'plugins/**'
+      - 'packages/**'
+      - '.yarn/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'yarn.lock'
+      - '.yarnrc.yml'
+      - '.github/workflows/**'
+      - '**/tsconfig.json'
+      - '**/tsconfigs/**'
+  workflow_dispatch:
+
+jobs:
+  install-dependencies:
+    runs-on: ubuntu-latest
+    env:
+      npm_config_nodedir: /usr
+
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Required for pushing changes back
+        token: ${{ secrets.GIT_TOKEN }}
+
+    - name: 🔍 Get Yarn version
+      id: yarn-version
+      run: |
+        file=$(ls .yarn/releases/yarn-*.cjs | head -n 1)
+        version=$(basename "$file" | sed -E 's/^yarn-([0-9]+\.[0-9]+\.[0-9]+)\.cjs$/\1/')
+        echo "YARN_VERSION=$version" >> $GITHUB_ENV
+
+    - name: 🛠️ Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          gcc g++ make \
+          python3 \
+          pkg-config \
+          libssl-dev \
+          libsecret-1-dev \
+          unzip curl git
+        # Install OpenShift oc CLI
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/oc/latest/linux/oc.tar.gz | tar xz
+        sudo mv oc /usr/local/bin/
+        oc version || true
+
+    - name: 🟢 Install Node.js 20
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+
+    - name: 🗑️ Deep Clean Yarn State
+      run: |
+        echo "🗑️ Clearing Yarn state and caches completely..."
+        rm -rf .yarn/cache
+        rm -f yarn.lock
+        rm -f .pnp.cjs .pnp.loader.mjs
+        rm -f .yarn/install-state.gz
+        echo "✅ Yarn state fully reset."
+
+    - name: 📦 Install dependencies (fresh each run)
+      run: node .yarn/releases/yarn-${YARN_VERSION}.cjs install --mode=skip-build --no-immutable
+
+    - name: 🧩 Process plugins
+      id: process
+      run: |
+        set -euo pipefail
+        for dir in plugins/*; do
+          [ -d "$dir" ] || continue
+          name="$(basename "$dir")"
+          [[ "$name" == .* ]] && continue # Skip hidden folders
+          echo "=== Processing $name ==="
+          node scripts/process-plugin.js "$name"
+        done
+
+    - name: 📝 Commit updated yarn.lock
+      if: github.ref == 'refs/heads/main'
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add yarn.lock
+        git commit -m "chore: update yarn.lock [skip ci]" || echo "No changes to commit"
+        git push origin HEAD:main
+
+    - name: 📊 Use metadata
+      run: |
+        echo "Plugin: ${{ fromJSON(steps.process.outputs.metadata_json).plugin }}"
+        echo "Commit: ${{ fromJSON(steps.process.outputs.metadata_json).commit }}"
+        echo "Integrity: ${{ fromJSON(steps.process.outputs.metadata_json).integrity }}"
+
+    - name: 🔐 Login to OpenShift cluster
+      run: |
+        oc login --token=${{ secrets.OC_LOGIN_TOKEN }} --server=https://api.rm1.0a51.p1.openshiftapps.com:6443
+        oc project poteatc-dev
+
+    - name: 📤 Copy tarball to pod
+      env:
+        NS: poteatc-dev
+      run: |
+        set -euo pipefail
+        POD=$(oc -n "$NS" get pod -l name=httpd-example -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' | awk '{print $1}')
+        if [ -z "$POD" ]; then
+          echo "No running pod found with label name=httpd-example in namespace $NS"
+          exit 1
+        fi
+        DEST=/opt/app-root/src
+        echo "Using pod: $POD"
+        echo "Dest: $DEST"
+
+        shopt -s nullglob
+        files=(processed/*.tgz)
+        if [ ${#files[@]} -eq 0 ]; then
+          echo "No .tgz files found in processed/"
+          exit 0
+        fi
+
+        for f in "${files[@]}"; do
+          echo "Copying $(basename "$f")"
+          oc -n "$NS" cp "$f" "$POD":"$DEST/"
+        done
+
+    # Current  TODO NOT WORKING PREVIOUS PLUGIN HASH STAYS THE SAME.
+    - name: 📝 Patch ConfigMap with updated plugin
+      env:
+        NS: poteatc-dev
+        CM: redhat-developer-hub-dynamic-plugins
+        META: ${{ steps.process.outputs.metadata_json }}
+      run: |
+        set -euo pipefail
+
+        FILENAME=$(jq -r .filename <<<"$META")
+        INTEGRITY=$(jq -r .integrity <<<"$META")
+        URL="http://httpd-example-poteatc-dev.apps.rm1.0a51.p1.openshiftapps.com/$FILENAME"
+
+        echo "🔍 Fetching current ConfigMap..."
+        CURRENT=$(oc -n "$NS" get cm "$CM" -o jsonpath="{.data.dynamic-plugins\.yaml}" || echo "")
+
+        echo "🔍 Cleaning up previous entries for the same plugin URL..."
+        # Remove any existing lines matching the same package URL
+        CLEANED=$(echo "$CURRENT" | grep -v "$URL" || true)
+
+        echo "➕ Adding updated plugin entry..."
+        NEW_ENTRY=$(printf '  - package: %s\n    integrity: %s\n    disabled: false\n' "$URL" "$INTEGRITY")
+
+        if [ -n "$CLEANED" ]; then
+          UPDATED="$CLEANED"$'\n'"$NEW_ENTRY"
+        else
+          UPDATED="$NEW_ENTRY"
+        fi
+
+        echo "🔧 Patching ConfigMap with updated dynamic-plugins.yaml..."
+        PATCH=$(jq -Rn --arg v "$UPDATED" '{"data": {"dynamic-plugins.yaml": $v}}')
+        echo "$PATCH" > patch.json
+        oc -n "$NS" patch cm "$CM" --type merge --patch-file patch.json
+        rm patch.json
+
+        echo "✅ ConfigMap updated successfully."
+
+
+
+    - name: 🔄 Restart RHDH deployment
+      env:
+        NS: poteatc-dev
+      run: |
+        set -euo pipefail
+        DEPLOY=$(oc -n "$NS" get deploy -o name | grep redhat-developer-hub || true)
+        if [ -z "$DEPLOY" ]; then
+          echo "❌ Could not find a deployment named redhat-developer-hub"
+          exit 1
+        fi
+
+        echo "🔄 Restarting $DEPLOY in $NS"
+        oc -n "$NS" rollout restart "$DEPLOY"
+        echo "🚀 Rollout triggered, not waiting for completion."
+
+    - name: ⚠️ Display Plugin Configuration Disclaimer
+      run: |
+        echo "------------------------------------------------------------"
+        echo "This plugin may require additional configuration in your"
+        echo "Backstage app-config.yaml or environment variables."
+        echo
+        echo "Please review the plugin documentation and consult:"
+        echo " - Backstage Docs: https://backstage.io/docs"
+        echo " - RHDH Docs: https://access.redhat.com/documentation/en-us/red_hat_developer_hub/"
+        echo "------------------------------------------------------------"

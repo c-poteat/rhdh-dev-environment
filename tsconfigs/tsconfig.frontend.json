@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfigs/tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "declarationDir": "../../dist-types/plugins/__PLUGIN_NAME__/src",
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*"],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "dev/**/*"
+  ]
+}

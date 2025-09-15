@@ -1,0 +1,11 @@
+Allow for multiple plugins to be processed at one time.
+Have a way to track plugins that have been processed already.
+Add metadata configs for processed plugins for audits.
+Add security checking dependabots  should be compatible with Enterprise also.
+
+
+src/alpha.ts:16:10 - error TS2305: Module '"@backstage/frontend-plugin-api"' has no exported member 'createFrontendPlugin'.
+16 import { createFrontendPlugin } from '@backstage/frontend-plugin-api';
+            ~~~~~~~~~~~~~~~~~~~~
+src/alpha/apis.ts:18:3 - error TS2305: Module '"@backstage/frontend-plugin-api"' has no exported member 'ApiBlueprint'.
+18   ApiBlueprint,
