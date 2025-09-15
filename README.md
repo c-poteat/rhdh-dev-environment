@@ -1,5 +1,7 @@
 
-# Backstage RHDH Plugin Pipeline
+# Backstage RHDH Plugin Pipeline 
+
+## Backstage Vanilla App
 
 This repository contains a **vanilla Backstage application**, scaffolded using the official Backstage CLI.  
 Backstage is an open platform for building developer portals that bring together your software catalog, documentation, and developer tools.
